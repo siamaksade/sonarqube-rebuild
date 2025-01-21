@@ -1,64 +1,68 @@
-FROM openjdk:11
+FROM eclipse-temurin:17-jre-jammy
 
-ENV SONAR_VERSION=7.9 \
+LABEL org.opencontainers.image.url=https://github.com/SonarSource/docker-sonarqube
+
+ENV LANG='en_US.UTF-8' \
+    LANGUAGE='en_US:en' \
+    LC_ALL='en_US.UTF-8'
+
+#
+# SonarQube setup
+#
+ARG SONARQUBE_VERSION=9.9.8.100196
+ARG SONARQUBE_ZIP_URL=https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-${SONARQUBE_VERSION}.zip
+ENV JAVA_HOME='/opt/java/openjdk' \
     SONARQUBE_HOME=/opt/sonarqube \
-    # Database configuration
-    # Defaults to using H2
-    # DEPRECATED. Use -v sonar.jdbc.username=... instead
-    # Drop these in the next release, also in the run script
-    SONARQUBE_JDBC_USERNAME=sonar \
-    SONARQUBE_JDBC_PASSWORD=sonar \
-    SONARQUBE_JDBC_URL=
+    SONAR_VERSION="${SONARQUBE_VERSION}" \
+    SQ_DATA_DIR="/opt/sonarqube/data" \
+    SQ_EXTENSIONS_DIR="/opt/sonarqube/extensions" \
+    SQ_LOGS_DIR="/opt/sonarqube/logs" \
+    SQ_TEMP_DIR="/opt/sonarqube/temp"
 
-# Http port
-EXPOSE 9000
-
-USER root
-
-RUN groupadd -r sonarqube && useradd -r -g sonarqube sonarqube
-
-# grab gosu for easy step-down from root
-RUN set -x \
-    && wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/1.10/gosu-$(dpkg --print-architecture)" \
-    && wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/1.10/gosu-$(dpkg --print-architecture).asc" \
-    && export GNUPGHOME="$(mktemp -d)" \
-    && for server in $(shuf -e ha.pool.sks-keyservers.net \
-                            hkp://p80.pool.sks-keyservers.net:80 \
-                            keyserver.ubuntu.com \
-                            hkp://keyserver.ubuntu.com:80 \
-                            pgp.mit.edu) ; do \
-        gpg --batch --keyserver "$server" --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4 && break || : ; \
-    done \
-    && gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu \
-    && rm -rf "$GNUPGHOME" /usr/local/bin/gosu.asc \
-    && chmod +x /usr/local/bin/gosu \
-    && gosu nobody true
-
-RUN set -x \
+RUN set -eux; \
+    groupadd --system --gid 1000 sonarqube; \
+    useradd --system --uid 1000 --gid sonarqube sonarqube; \
+    apt-get update; \
+    apt-get --no-install-recommends -y install \
+        bash \
+        curl \
+        fonts-dejavu \
+        gnupg \
+        unzip; \
+    echo "networkaddress.cache.ttl=5" >> "${JAVA_HOME}/conf/security/java.security"; \
+    sed --in-place --expression="s?securerandom.source=file:/dev/random?securerandom.source=file:/dev/urandom?g" "${JAVA_HOME}/conf/security/java.security"; \
     # pub   2048R/D26468DE 2015-05-25
     #       Key fingerprint = F118 2E81 C792 9289 21DB  CAB4 CFCA 4A29 D264 68DE
     # uid                  sonarsource_deployer (Sonarsource Deployer) <infra@sonarsource.com>
     # sub   2048R/06855C1D 2015-05-25
-    && for server in $(shuf -e ha.pool.sks-keyservers.net \
-                            hkp://p80.pool.sks-keyservers.net:80 \
-                            keyserver.ubuntu.com \
-                            hkp://keyserver.ubuntu.com:80 \
-                            pgp.mit.edu) ; do \
-        gpg --batch --keyserver "$server" --recv-keys F1182E81C792928921DBCAB4CFCA4A29D26468DE && break || : ; \
-    done \
-    && cd /opt \
-    && curl -o sonarqube.zip -fSL https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-$SONAR_VERSION.zip \
-    && curl -o sonarqube.zip.asc -fSL https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-$SONAR_VERSION.zip.asc \
-    && gpg --batch --verify sonarqube.zip.asc sonarqube.zip \
-    && unzip sonarqube.zip \
-    && mv sonarqube-$SONAR_VERSION sonarqube \
-    && chown -R sonarqube:sonarqube sonarqube \
-    && rm sonarqube.zip* \
-    && rm -rf $SONARQUBE_HOME/bin/*
+    for server in $(shuf -e hkps://keys.openpgp.org \
+                            hkps://keyserver.ubuntu.com) ; do \
+        gpg --batch --keyserver "${server}" --recv-keys 679F1EE92B19609DE816FDE81DB198F93525EC1A && break || : ; \
+    done; \
+    mkdir --parents /opt; \
+    cd /opt; \
+    curl --fail --location --output sonarqube.zip --silent --show-error "${SONARQUBE_ZIP_URL}"; \
+    curl --fail --location --output sonarqube.zip.asc --silent --show-error "${SONARQUBE_ZIP_URL}.asc"; \
+    gpg --batch --verify sonarqube.zip.asc sonarqube.zip; \
+    unzip -q sonarqube.zip; \
+    mv "sonarqube-${SONARQUBE_VERSION}" sonarqube; \
+    chown -R sonarqube:sonarqube sonarqube; \
+    rm sonarqube.zip*; \
+    rm -rf ${SONARQUBE_HOME}/bin/*; \
+    ln -s "${SONARQUBE_HOME}/lib/sonar-application-${SONARQUBE_VERSION}.jar" "${SONARQUBE_HOME}/lib/sonarqube.jar"; \
+    chmod -R 555 ${SONARQUBE_HOME}; \
+    chmod -R ugo+wrX "${SQ_DATA_DIR}" "${SQ_EXTENSIONS_DIR}" "${SQ_LOGS_DIR}" "${SQ_TEMP_DIR}"; \
+    apt-get remove -y gnupg unzip curl; \
+    rm -rf /var/lib/apt/lists/*;
 
-VOLUME "$SONARQUBE_HOME/data"
 
-WORKDIR $SONARQUBE_HOME
+COPY entrypoint.sh ${SONARQUBE_HOME}/docker/
+RUN chown -R sonarqube:sonarqube /opt/sonarqube
+WORKDIR ${SONARQUBE_HOME}
+EXPOSE 9000
+
 USER sonarqube
-COPY run.sh $SONARQUBE_HOME/bin/
-ENTRYPOINT ["./bin/run.sh"]
+
+STOPSIGNAL SIGINT
+
+ENTRYPOINT ["/opt/sonarqube/docker/entrypoint.sh"]
